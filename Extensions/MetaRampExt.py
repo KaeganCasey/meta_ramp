@@ -17,9 +17,7 @@ class MetaRampExt:
 	MetaRampExt description
 	"""
 	def __init__(self, ownerComp):
-		# The component to which this extension is attached
 		self.ownerComp = ownerComp
-		self.keyOrderDAT = self.ownerComp.op('keyOrder')
 
 		self.keys_page = self.ownerComp.customPages[0]
 
@@ -27,30 +25,31 @@ class MetaRampExt:
 		self.color_prefix = 'Color'
 		self.delete_prefix = 'Delete'
 
+	def sort_keys_enabled(self):
+		"""Check if Sort keys parameter is enabled or not."""
+		return bool(self.ownerComp.par.Sortkeys.eval())
+
 	def collect_params(self, sourceOP, param_list):
 		"""Collect params given in list from sourceOP."""
 		return [sourceOP.par[i] for i in param_list]
 
+	def get_position_params(self):
+		"""Collect position parameters."""
+		return self.ownerComp.pars(f'{self.position_prefix}*')
+
 	def get_num_params(self):
 		"""Get number of keys by using keyOrderDAT table."""
-		return self.keyOrderDAT.numRows - 1
+		return len(self.get_position_params())
 
-
-	def get_digits(self, string_val: str):
-		"""Return trailing digits from a string."""
-		pattern = re.compile(r'\d+$')
-		digits = pattern.search(string_val)
-		if digits:
-			return int(digits.group())
-		else:
-			return None
-
+	def get_position_param_digits(self):
+		"""Collect list of position parameter digits."""
+		position_params = self.get_position_params()
+		return [tdu.digits(i.name) for i in position_params]
 	
 	def create_key_params(self, idx, new_position_val, enable_delete_val):
-		"""Create new key parameters on key page using index and default values provided.
-		"""
+		"""Create new key parameters on key page using index and default values provided."""
 		# create position
-		pos = self.keys_page.appendFloat(f'Position{idx}')
+		pos = self.keys_page.appendFloat(f'{self.position_prefix}{idx}')
 		pos[0].startSection = True
 		pos[0].val = new_position_val
 		pos[0].default = 0.5
@@ -58,7 +57,7 @@ class MetaRampExt:
 		pos[0].clampMax = True
 
 		# create color
-		color = self.keys_page.appendRGBA(f'Color{idx}')
+		color = self.keys_page.appendRGBA(f'{self.color_prefix}{idx}')
 		
 		# initialize rgb to grey and alpha to 1.0
 		for i in range(3):
@@ -67,9 +66,32 @@ class MetaRampExt:
 		color[3].val = 1.0
 		color[3].default = 1.0
 
-		delete = self.keys_page.appendPulse(f'Delete{idx}')
+		delete = self.keys_page.appendPulse(f'{self.delete_prefix}{idx}')
+
+		# if Enabledelete parameter True then read only should be false and vice versa
 		delete[0].readOnly = not enable_delete_val
 
+	def CollectColorKeys(self):
+		"""Loop over color parameters and return rows that will represent ramp keys in script DAT."""
+		rows = []
+		header = ['pos', 'r', 'g', 'b', 'a']
+		rows.append(header)
+
+		# loop through each position par and build a list of position, r, g, b, a values
+		for param in self.get_position_params():
+
+			pos = param.eval()
+			
+			# because position and color pars share a digit we can rely on this order
+			# when buidling our our color keys
+			par_digit = tdu.digits(param.name)
+			red = parent.META_RAMP.par[f'{self.color_prefix}{par_digit}r']
+			green = parent.META_RAMP.par[f'{self.color_prefix}{par_digit}g']
+			blue = parent.META_RAMP.par[f'{self.color_prefix}{par_digit}b']
+			alpha = parent.META_RAMP.par[f'{self.color_prefix}{par_digit}a']
+
+			rows.append([pos, red, green, blue, alpha])
+		return rows
 
 	def OnAddKey(self):
 		"""Creates Position, Color, and Delete params for new key. 
@@ -78,13 +100,13 @@ class MetaRampExt:
 		move on to incrementing key indexes.
 		"""
 		new_position_name = 'Newkeyposition'
-		new_position_val = self.ownerComp.par[new_position_name].val
+		new_position_val = self.ownerComp.par[new_position_name].eval()
 
 		enable_delete_name = 'Enabledelete'
-		enable_delete_val = self.ownerComp.par[enable_delete_name].val
+		enable_delete_val = self.ownerComp.par[enable_delete_name].eval()
 
 		num_params = self.get_num_params() - 1
-		position_param_digits = [self.get_digits(i.val) for i in self.keyOrderDAT.col('name')][1:]
+		position_param_digits = self.get_position_param_digits()
 
 		ideal_numbers_present = list(range(len(position_param_digits) + 1))
 		ideal_numbers_present[-1] = 99
@@ -100,12 +122,12 @@ class MetaRampExt:
 			next_idx = max(ideal_numbers_present[:-1]) + 1
 		
 		self.create_key_params(next_idx, new_position_val, enable_delete_val)	
-
+		self.SwitchKeyPositions()
 
 	def OnEnableDelete(self, par):
 		"""Will toggle read only state for all Delete params except for 0 and 99."""
 		key_params = self.keys_page.pars
-		delete_params = [i for i in key_params if 'Delete' in i.name]
+		delete_params = [i for i in key_params if self.delete_prefix in i.name]
 		if par.eval() == 1:
 			for param in delete_params:
 				if (param.name != 'Delete0') and (param.name != 'Delete99'):
@@ -114,12 +136,10 @@ class MetaRampExt:
 			for param in delete_params:
 				if (param.name != 'Delete0') and (param.name != 'Delete99'):
 					param.readOnly = True
-
-
 		
 	def OnDeleteKey(self, par):
 		"""Deletes a single key and corresponding params."""
-		par_digits = str(self.get_digits(par.name))
+		par_digits = str(tdu.digits(par.name))
 
 		# cant delete 0 or 99
 		if (par_digits != '0') and (par_digits != '99'):
@@ -136,21 +156,28 @@ class MetaRampExt:
 			for param in param_list:
 				param.destroy()
 
-
 	def SwitchKeyPositions(self):
-		""""""
-		num_params = self.get_num_params()
+		"""Switch key positions if Sortkeys parameter is enabled."""
+		if self.sort_keys_enabled():
+			num_params = self.get_num_params()
 
-		# get proper order of keys according to position params (row, param_name_digit)
-		position_params = [i.val for i in self.keyOrderDAT.col('name')][1:]
-		position_param_digits = [self.get_digits(i.val) for i in self.keyOrderDAT.col('name')][1:]
-		
-		# create color and delete params using position digits
-		color_params = ["".join([self.color_prefix, str(i)]) for i in position_param_digits]
-		delete_params = ["".join([self.delete_prefix, str(i)]) for i in position_param_digits]
+			# collect position parameter names and values
+			position_info = [(i.eval(), i.name) for i in self.get_position_params()]
 
-		# zip and unpack sorted list of parameters
-		sorted_param_list = list(zip(position_params, color_params, delete_params))
-		expanded_param_list = [element for tup in sorted_param_list for element in tup]
-	
-		self.keys_page.sort(*expanded_param_list)
+			# sort by first element of tuple (position values)
+			sorted_pos_info = sorted(position_info)
+
+			position_param_names = [name for val, name in sorted_pos_info]
+			position_param_digits = [tdu.digits(name) for val, name in sorted_pos_info]
+
+			# create color and delete params using position digits
+			color_param_names = ["".join([self.color_prefix, str(i)]) for i in position_param_digits]
+			delete_param_names = ["".join([self.delete_prefix, str(i)]) for i in position_param_digits]
+
+			# zip and unpack sorted list of parameters
+			zipped_param_list = list(zip(position_param_names, color_param_names, delete_param_names))
+			expanded_param_list = [element for tup in zipped_param_list for element in tup]
+
+			#print(expanded_param_list)
+			
+			self.keys_page.sort(*expanded_param_list)
